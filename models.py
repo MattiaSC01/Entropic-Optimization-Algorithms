@@ -1,292 +1,635 @@
-# TODO: where possible, replace native python functions with Tensorflow equivalent functions, to improve performance.
-
-
-import numpy as np
-import pandas as pd
-import sklearn
-import tensorflow as tf
 from tensorflow import keras
-from keras import regularizers
-from layers import Encoder, Decoder
+import tensorflow as tf
 
 
-# A vanilla AutoEncoder implemented as a Multi-Layer Perceptron stacking
-# an Encoder and a Decoder from the script layers.py.
+# A Multi-Layer Perceptron implemented as a stack of keras.layers.Dense layers.
+# It implements the methods __init__, call, get_config.
+
+class MLP(keras.layers.Layer):
+
+    def __init__(
+        self, 
+        neurons,            # list of integers, each being the number of neurons of a layer
+        activations=None,   # list of activations, one per layer.
+        l2_rate=None,       # intensity of l2 regularization
+        name='mlp', 
+        **kwargs,           # keyword arguments for the parent class constructor
+    ):
+        
+        # call parent constructor
+        super(MLP, self).__init__(name=name, **kwargs)
+        
+        # default regularization rate
+        if l2_rate is None:
+            l2_rate = 0
+        
+        # default activations
+        if activations is None:
+            activations = [None] * len(neurons)
+        
+        # store initialization parameters
+        self.neurons = neurons
+        self.l2_rate = l2_rate
+        self.activations = activations
+        
+        # initialize densely connected layers in a loop, and save them inside a list
+        layers = []
+        for n_neurons, activation in zip(neurons, activations):
+            layer = keras.layers.Dense(
+                n_neurons, 
+                activation=activation, 
+                kernel_regularizer=keras.regularizers.L2(l2_rate), 
+                bias_regularizer=keras.regularizers.L2(l2_rate)
+            )
+            layers.append(layer)
+
+        # make the layer list an attribute.
+        self.layers = layers
+
+
+    # define the forward pass
+    def call(self, inputs):
+        x = inputs
+        for layer in self.layers:
+            x = layer(x)
+        return x
+
+    # return the layer configuration
+    def get_config(self):
+        config = super(MLP, self).get_config()
+        config.update({
+            "neurons": self.neurons,
+            "activations": self.activations,
+            "l2_rate": self.l2_rate,
+        })
+        return config
+
+
+# A vanilla AutoEncoder implemented as a Multi-Layer Perceptron by stacking
+# an Encoder and a Decoder, both instances of the MLP class.
+# It implements the methods __init__, call, get_config.
 
 class AutoEncoder(keras.Model):
     
     def __init__(
         self,
-        neurons_encoder,   # list of integers
-        neurons_decoder,   # list of integers
-        activations_encoder=None,   # list of activations
-        activations_decoder=None,   # list of activations
+        neurons_encoder,            # list of integers, each being the number of neurons of a layer of the encoder
+        neurons_decoder,            # list of integers, each being the number of neurons of a layer of the decoder
+        activations_encoder=None,   # list of activations, one per layer of the encoder
+        activations_decoder=None,   # list of activations, one per layer of the decoder
+        l2_rate=0,                  # intensity of l2 regularization
         name='autoencoder',
-        l2_rate=None,               # rate for l2 regularization
-        **kwargs,
+        **kwargs,                   # keyword arguments for the parent class constructor
     ):
         
         # call parent constructor
         super(AutoEncoder, self).__init__(name=name, **kwargs)
-        
-        # initialize Encoder and Decoder
-        self.encoder = Encoder(neurons_encoder, activations_encoder, name='encoder', l2_rate=l2_rate)
-        self.decoder = Decoder(neurons_decoder, activations_decoder, name='decoder', l2_rate=l2_rate)
-    
-    # define forward pass
-    def call(self, inputs):
-        return self.decoder(self.encoder(inputs))
-    
-    # initialize weights of encoder and decoder
-    def build(self, input_shape):
-        self.encoder._build(input_shape)
-        self.decoder._build(self.encoder.bottleneck)
-        if not hasattr(self.build, '_is_default'):
-            self._build_input_shape = input_shape
-        self.built = True
 
-    # returns the configuration of the instance
+        # default encoder activations
+        if activations_encoder is None:
+            activations_encoder = ['relu'] * len(neurons_encoder)
+        
+        # default decoder activations
+        if activations_decoder is None:
+            activations_decoder = ['relu'] * (len(neurons_decoder) - 1) + ['sigmoid']
+        
+        # store initialization parameters
+        self.neurons_encoder = neurons_encoder
+        self.neurons_decoder = neurons_decoder
+        self.activations_encoder = activations_encoder
+        self.activations_decoder = activations_decoder
+        self.l2_rate = l2_rate
+
+        # initialize the encoder
+        self.encoder = MLP(
+            neurons_encoder, 
+            activations_encoder, 
+            l2_rate, 
+            name='encoder', 
+        )
+
+        # initialize the decoder
+        self.decoder = MLP(
+            neurons_decoder, 
+            activations_decoder,
+            l2_rate,  
+            name='decoder', 
+        )
+
+    # define the forward pass
+    def call(self, inputs):
+        x = inputs
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
+    
+    # return the model configuration, to enable saving of the model
     def get_config(self):
         config = {
-            "neurons_encoder": self.encoder.neurons,
-            "neurons_decoder": self.decoder.neurons,
-            "activations_encoder": self.encoder.activations,
-            "activations_decoder": self.decoder.activations,
+            "neurons_encoder": self.neurons_encoder, 
+            "neurons_decoder": self.neurons_decoder, 
+            "activations_encoder": self.activations_encoder, 
+            "activations_decoder": self.activations_decoder, 
+            "l2_rate": self.l2_rate, 
         }
         return config
-    
-    # re-initialize randomly the weights of the encoder and of the decoder
-    def reset_weights(self):
-        print(f"\nRe-initializing weights of model {self.name}\n")
-        self.encoder.reset_weights()
-        self.decoder.reset_weights()
 
 
-# a Denoising AutoEncoder implemented stacking an Encoder and a Decoder,
-# and adding Gaussian Noise to the batches during training.
+# A denoising AutoEncoder implemented as a Multi-Layer Perceptron by stacking
+# a keras.layers.GaussianNoise layer, an Encoder and a Decoder, the last two being
+# instances of the MLP class.
+# It implements the methods __init__, call, get_config.
 
 class DenoisingAutoEncoder(keras.Model):
 
     def __init__(
         self,
-        neurons_encoder,   # list of integers
-        neurons_decoder,   # list of integers
-        stddev=0.1,   # std of the noise added during training
-        activations_encoder=None,   # list of activations
-        activations_decoder=None,   # list of activations
+        neurons_encoder,                # list of integers, each being the number of neurons of a layer of the encoder
+        neurons_decoder,                # list of integers, each being the number of neurons of a layer of the decoder
+        activations_encoder=None,       # list of activations, one per layer of the encoder
+        activations_decoder=None,       # list of activations, one per layer of the decoder
+        stddev=0.1,                     # stddev of the gaussian noise applied during training
+        l2_rate=0,                      # intensity of l2 regularization
         name='denoising_autoencoder',
-        **kwargs,
+        **kwargs,                       # keyword arguments for the parent class constructor
     ):
         
         # call parent constructor
         super(DenoisingAutoEncoder, self).__init__(name=name, **kwargs)
+
+        # default encoder activations
+        if activations_encoder is None:
+            activations_encoder = ['relu'] * len(neurons_encoder)
         
-        # initialize encoder and decoder, save stddev of the noise
-        self.encoder = Encoder(neurons_encoder, activations_encoder, name='encoder')
-        self.decoder = Decoder(neurons_decoder, activations_decoder, name='decoder')
-        self.stddev = tf.Variable(stddev, trainable=False, name='stddev', dtype=tf.float32)
-    
-    # define forward pass. Different behaviour during training and during inference:
-    # when training, gaussian noise is added to the data that must be reconstructed.
+        # default decoder activations
+        if activations_decoder is None:
+            activations_decoder = ['relu'] * (len(neurons_decoder) - 1) + ['sigmoid']
+        
+        # store initialization parameters
+        self.neurons_encoder = neurons_encoder
+        self.neurons_decoder = neurons_decoder
+        self.activations_encoder = activations_encoder
+        self.activations_decoder = activations_decoder
+        self.stddev = stddev
+        self.l2_rate = l2_rate
+        
+        # initialize noise layer
+        self.gaussian_noise = keras.layers.GaussianNoise(stddev)
+
+        # initialize the encoder
+        self.encoder = MLP(
+            neurons_encoder, 
+            activations_encoder, 
+            l2_rate, 
+            name='encoder', 
+        )
+
+        # initialize the decoder
+        self.decoder = MLP(
+            neurons_decoder, 
+            activations_decoder,
+            l2_rate,  
+            name='decoder', 
+        )
+
+    # define the forward pass. During training, apply Gaussian noise to the inputs before feeding them to the autoencoder.
+    # During inference, do not add noise.
     def call(self, inputs, training=False):
         x = inputs
-        if training:
-            noise = tf.random.normal(tf.shape(x), mean=0.0, stddev=self.stddev)
-            x = x + noise
-        return self.decoder(self.encoder(x))
+        x = self.gaussian_noise(x, training=training)
+        x = self.encoder(x)
+        x = self.decoder(x)
+        return x
     
-    # initialize weights
-    def build(self, input_shape):
-        self.encoder._build(input_shape)
-        self.decoder._build(self.encoder.bottleneck)
-        if not hasattr(self.build, '_is_default'):
-            self._build_input_shape = input_shape
-        self.built = True
-
-    # return configuration of the instance
+    # return the model configuration, to enable saving of the model
     def get_config(self):
         config = {
-            "neurons_encoder": self.encoder.neurons,
-            "neurons_decoder": self.decoder.neurons,
-            "stddev": self.stddev.numpy(),
-            "activations_encoder": self.encoder.activations,
-            "activations_decoder": self.decoder.activations,
+            "neurons_encoder": self.neurons_encoder,
+            "neurons_decoder": self.neurons_decoder,
+            "activations_encoder": self.activations_encoder,
+            "activations_decoder": self.activations_decoder,
+            "stddev": self.stddev, 
+            "l2_rate": self.l2_rate, 
         }
         return config
-    
-    # re-initialize randomly the weights
-    def reset_weights(self):
-        print(f"\nRe-initializing weights of model {self.name}\n")
-        self.encoder.reset_weights()
-        self.decoder.reset_weights()
 
 
-# a Replicated AutoEncoder, implemented as a number of replicas of the Encoder,
-# a common Decoder, and a 'baricenter' Encoder that is used for inference.
+# a Replicated AutoEncoder with replicas of the full autoencoder, each being an instance
+# of the AutoEncoder class.
+# It implements the methods __init__, call, get_config, train_step, test_step.
 
-class ReplicatedAutoEncoder(keras.Model):
-    
+class FullReplicatedAutoEncoder(keras.Model):
+
     def __init__(
         self,
-        neurons_encoder,   # list of integers
-        neurons_decoder,   # list of integers
-        n_replicas=5,   # number of replicas of the Encoder
-        rate=0.001,   # rate of regularization
-        activations_encoder=None,   # list of activations
-        activations_decoder=None,   # list of activations
-        name='replicated_autoencoder',
-        **kwargs,
+        neurons_encoder,                      # list of integers, each being the number of neurons of a layer of the encoder
+        neurons_decoder,                      # list of integers, each being the number of neurons of a layer of the decoder
+        activations_encoder=None,             # list of activations, one per layer of the encoder
+        activations_decoder=None,             # list of activations, one per layer of the decoder
+        n_replicas=5,                         # number of replicas of the autoencoder
+        distance_rate=1e-6,                   # control how strong an incentive the replicas have to stay close together
+        name='full_replicated_autoencoder',   
+        **kwargs,                             # keyword arguments for the parent class constructor
     ):
         
         # call parent constructor
-        super(ReplicatedAutoEncoder, self).__init__(name=name, **kwargs)
+        super(FullReplicatedAutoEncoder, self).__init__(name=name, **kwargs)
 
+        # default encoder activations
+        if activations_encoder is None:
+            activations_encoder = ['relu'] * len(neurons_encoder)
+        
+        # default decoder activations
+        if activations_decoder is None:
+            activations_decoder = ['relu'] * (len(neurons_decoder) - 1) + ['sigmoid']
+
+        # store initialization parameters
+        self.neurons_encoder = neurons_encoder
+        self.neurons_decoder = neurons_decoder
+        self.activations_encoder = activations_encoder
+        self.activations_decoder = activations_decoder
         self.n_replicas = n_replicas
 
-        # initialize replicas of the encoder
+        # initialize a variable storing the distance regularization rate
+        self.distance_rate = tf.Variable(distance_rate, trainable=False, name='rate', dtype=tf.float32)
+
+        # store input dimension
+        self.input_dim = neurons_decoder[-1]
+
+        # initialize replicas of the autoencoder in a loop, and save them inside a list
         replicas = []
         for i in range(n_replicas):
-            replica = Encoder(neurons_encoder, activations_encoder, name=f"encoder_{i}")
+            replica = AutoEncoder(
+                neurons_encoder, 
+                neurons_decoder, 
+                activations_encoder, 
+                activations_decoder, 
+                name=f"autoencoder_{i}"
+            )
             replicas.append(replica)
+        
+        # save the list of replicas as an attribute
         self.replicas = replicas
 
-        # initialize baricenter and decoder
-        self.baricenter = Encoder(neurons_encoder, activations_encoder, name="baricenter")
-        self.decoder = Decoder(neurons_decoder, activations_decoder, name="decoder")
+        # initialize the baricenter
+        self.baricenter = AutoEncoder(
+                neurons_encoder, 
+                neurons_decoder, 
+                activations_encoder, 
+                activations_decoder, 
+                name=f"baricenter"
+            )
 
         # set up the losses
-        self.rate = tf.Variable(rate, trainable=False, name='rate', dtype=tf.float32)
-        self.total_loss_tracker = keras.metrics.Mean(name='loss')
-        self.reconstruction_loss_tracker = keras.metrics.Mean(name='reconstruction_loss')
-        self.elastic_loss_tracker = keras.metrics.Mean(name='distance_loss')
+        self.total_loss_tracker = keras.metrics.Mean(name='loss')                           # total loss, to be minimized
+        self.reconstruction_loss_tracker = keras.metrics.Mean(name='reconstruction_loss')   # average reconstruction loss of replicas
+        self.baricenter_loss_tracker = keras.metrics.Mean(name='baricenter_loss')           # reconstruction loss of the baricenter
+        self.distance_loss_tracker = keras.metrics.Mean(name='distance_loss')               # average distance of replicas from baricenter
     
-    # define the forward pass. During training, compute one reconstruction per replica of the 
-    # encoder. During inference, use only the baricenter for reconstruction.
-    def call(self, inputs, training=False):
-        if training:
-            return [self.decoder(replica(inputs)) for replica in self.replicas]
-        else:
-            return self.decoder(self.baricenter(inputs))
+    # define the forward pass. It returns a list of reconstructions, the first being obtained by the baricenter,
+    # and the following ones by the replicas.
+    def call(self, inputs):
+        return [self.baricenter(inputs)] + [replica(inputs) for replica in self.replicas]
     
-    # initialize weights
-    def build(self, input_shape):
+    # return the model configuration to enable saving
+    def get_config(self):
+        config = {
+            "neurons_encoder": self.neurons_encoder,
+            "neurons_decoder": self.neurons_decoder,
+            "activations_encoder": self.activations_encoder,
+            "activations_decoder": self.activations_decoder,
+            "n_replicas": self.n_replicas,
+            "distance_rate": self.distance_rate.numpy(),
+        }
+        return config
+    
+    # compute the distance of each replica from the baricenter, and return the distances in a list
+    def distances(self):
+        distances = []
         for replica in self.replicas:
-            replica._build(input_shape)
-        self.baricenter._build(input_shape)
-        self.decoder._build(self.baricenter.bottleneck)
-        if not hasattr(self.build, '_is_default'):
-            self._build_input_shape = input_shape
-        self.built = True
+            d = 0
+            for w1, w2 in zip(replica.weights, self.baricenter.weights):
+                d += tf.norm(w1 - w2) ** 2   # since we compute the squared euclidean distance, we can do it piece-wise
+            distances.append(d)
+        return distances
+    
+    # define the training behaviour when the model is presented with a batch of data
+    def train_step(self, data):
 
-    # list losses and metrics. Their state will be reset at the beginning of each epoch
+        # unpack the batch data
+        x, y = data
+
+        # to compute reconstruction error
+        mse = keras.losses.MeanSquaredError()
+
+        # forward pass and computation of losses
+        with tf.GradientTape() as tape:
+            
+            # compute the reconstructions given by the replicas and by the baricenter
+            reconstructions = self(x)
+            reconstructions_replicas = reconstructions[0:]
+            reconstruction_baricenter = reconstructions[0]
+
+            # compute the average reconstruction error of the replicas
+            reconstruction_loss = 0
+            for reconstruction in reconstructions_replicas:
+                loss = mse(y, reconstruction)
+                reconstruction_loss += loss
+            reconstruction_loss /= self.n_replicas
+
+            # compute the average squared euclidean distance between the weights of the baricenter and those of the replicas.
+            distance_loss = 0
+            for replica in self.replicas:
+                d = 0
+                for w1, w2 in zip(replica.weights, self.baricenter.weights):
+                    d += tf.norm(w1 - w2) ** 2   # since we compute the squared euclidean distance, we can do it piece-wise
+                distance_loss += d
+            distance_loss /= self.n_replicas
+
+            # compute the total loss
+            total_loss = reconstruction_loss + self.distance_rate * distance_loss
+        
+        # compute the reconstruction error of the baricenter
+        baricenter_loss = mse(y, reconstruction_baricenter)
+
+        # update trainable weights
+        grads = tape.gradient(total_loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+
+        # update the state of the loss trackers
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.baricenter_loss_tracker.update_state(baricenter_loss)
+        self.distance_loss_tracker.update_state(distance_loss)
+
+        # return the current state of the losses
+        return {m.name: m.result() for m in self.metrics}
+    
+    # define the testing behaviour when the model is presented with a batch of data
+    def test_step(self, data):
+        
+        # unpack the batch data
+        x, y = data
+
+        # to compute reconstruction error
+        mse = keras.losses.MeanSquaredError()
+
+        # compute the reconstructions given by the replicas and by the baricenter
+        reconstructions = self(x)
+        reconstructions_replicas = reconstructions[0:]
+        reconstruction_baricenter = reconstructions[0]
+
+        # compute the average reconstruction error of the replicas
+        reconstruction_loss = 0
+        for reconstruction in reconstructions_replicas:
+            loss = mse(y, reconstruction)
+            reconstruction_loss += loss
+        reconstruction_loss /= self.n_replicas
+
+        # compute the reconstruction error of the baricenter
+        baricenter_loss = mse(y, reconstruction_baricenter)
+
+        # compute the average squared euclidean distance between the weights of the baricenter and those of the replicas.
+        distance_loss = 0
+        for replica in self.replicas:
+            d = 0
+            for w1, w2 in zip(replica.weights, self.baricenter.weights):
+                d += tf.norm(w1 - w2) ** 2   # since we compute the squared euclidean distance, we can do it piece-wise
+            distance_loss += d
+        distance_loss /= self.n_replicas
+
+        # compute the total loss
+        total_loss = reconstruction_loss + self.distance_rate * distance_loss
+
+        # update the state of the loss trackers
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.baricenter_loss_tracker.update_state(baricenter_loss)
+        self.distance_loss_tracker.update_state(distance_loss)
+
+        # return the current state of the losses
+        return {m.name: m.result() for m in self.metrics}
+
+    
+    # metrics listed here have their state reset at the beginning of every epoch when training with fit, and
+    # at the beginning of every call to evaluate
     @property
     def metrics(self):
         return [
             self.total_loss_tracker,
             self.reconstruction_loss_tracker,
-            self.elastic_loss_tracker,
+            self.baricenter_loss_tracker, 
+            self.distance_loss_tracker,
         ]
+
+
+# a Replicated AutoEncoder with replicas of the encoder only, each being an instance
+# of the MLP class, and a common decoder, also of the MLP class.
+# It implements the methods __init__, call, get_config, train_step, test_step.
+
+class ReplicatedAutoEncoder(keras.Model):
+
+    def __init__(
+        self,
+        neurons_encoder,                      # list of integers, each being the number of neurons of a layer of the encoder
+        neurons_decoder,                      # list of integers, each being the number of neurons of a layer of the decoder
+        activations_encoder=None,             # list of activations, one per layer of the encoder
+        activations_decoder=None,             # list of activations, one per layer of the decoder
+        n_replicas=5,                         # number of replicas of the autoencoder
+        distance_rate=1e-6,                   # control how strong an incentive the replicas have to stay close together
+        name='full_replicated_autoencoder',   
+        **kwargs,                             # keyword arguments for the parent class constructor
+    ):
+        
+        # call parent constructor
+        super(ReplicatedAutoEncoder, self).__init__(name=name, **kwargs)
+
+        # default encoder activations
+        if activations_encoder is None:
+            activations_encoder = ['relu'] * len(neurons_encoder)
+        
+        # default decoder activations
+        if activations_decoder is None:
+            activations_decoder = ['relu'] * (len(neurons_decoder) - 1) + ['sigmoid']
+
+        # store initialization parameters
+        self.neurons_encoder = neurons_encoder
+        self.neurons_decoder = neurons_decoder
+        self.activations_encoder = activations_encoder
+        self.activations_decoder = activations_decoder
+        self.n_replicas = n_replicas
+        
+        # initialize a variable storing the distance regularization rate
+        self.distance_rate = tf.Variable(distance_rate, trainable=False, name='distance_rate', dtype=tf.float32)
+
+        # store input dimension
+        self.input_dim = neurons_decoder[-1]
+        
+        # initialize replicas of the autoencoder in a loop, and save them inside a list
+        replicas = []
+        for i in range(n_replicas):
+            replica = MLP(
+                neurons_encoder, 
+                activations_encoder, 
+                name=f"encoder_{i}"
+            )
+            replicas.append(replica)
+        
+        # save the list of replicas as an attribute
+        self.replicas = replicas
+
+        # initialize the baricenter
+        self.baricenter = MLP(
+            neurons_encoder, 
+            activations_encoder, 
+            name=f"baricenter", 
+        )
+
+        # initialize the common decoder
+        self.decoder = MLP(
+            neurons_decoder, 
+            activations_decoder, 
+            name='decoder', 
+        )
+
+        # set up the losses
+        self.total_loss_tracker = keras.metrics.Mean(name='loss')                           # total loss, to be minimized
+        self.reconstruction_loss_tracker = keras.metrics.Mean(name='reconstruction_loss')   # average reconstruction loss of replicas
+        self.baricenter_loss_tracker = keras.metrics.Mean(name='baricenter_loss')           # reconstruction loss of the baricenter
+        self.distance_loss_tracker = keras.metrics.Mean(name='distance_loss')               # average distance of replicas from baricenter
     
-    # The following method computes the average reconstruction error of the reconstructions
-    # in y_pred (one per replica) with respect to y, as defined by the argument loss_fn.
-    def loss_fn(self, y, y_pred, loss_fn_, sample_weight=None):
-        loss = tf.constant(0, dtype=tf.float32)
-        for reconstruction in y_pred:
-            loss_replica = loss_fn_(y, reconstruction, sample_weight=sample_weight)
-            loss += loss_replica
-        return loss / self.n_replicas
+    # define the forward pass. It returns a list of reconstructions, the first being obtained by the baricenter,
+    # and the following ones by the replicas.
+    def call(self, inputs):
+        return [self.decoder(self.baricenter(inputs))] + [self.decoder(replica(inputs)) for replica in self.replicas]
     
-    # The following method defines the distance function between the weights of two Encoders.
-    # w1, w2 are lists of tensors containing the kernels and biases of the layers composing the
-    # two encoders.x
-    def dist(self, w1, w2):
-        d = 0
-        for a, b in zip(w1, w2):
-            d += tf.norm(a-b, ord='euclidean') ** 2
-        return d
-    
-    # customize the behaviour during training at the level of batches. fit repeatedly calls this method.
-    def train_step(self, data):
-        
-        # get the batch data
-        if len(data) == 3:
-            x, y, sample_weight = data
-        else:
-            sample_weight = None
-            x, y = data
-        
-        # Forward pass and loss computation
-        with tf.GradientTape() as tape:
-            y_pred = self(x, training=True)
-            reconstruction_loss = self.loss_fn(y, y_pred, self.compiled_loss, sample_weight=sample_weight)
-            elastic_loss = 0
-            for replica in self.replicas:
-                elastic_loss += self.dist(replica.weights, self.baricenter.weights)
-            elastic_loss /= self.n_replicas
-            total_loss = reconstruction_loss + self.rate * elastic_loss
-        
-        # weight update
-        grads = tape.gradient(total_loss, self.trainable_weights)
-        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
-        
-        # loss update
-        self.total_loss_tracker.update_state(total_loss)
-        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
-        self.elastic_loss_tracker.update_state(elastic_loss)
-        
-        return {m.name: m.result() for m in self.metrics}
-    
-    # define the behaviour during inference. model.evaluate gives wrong results!!!
-    def test_step(self, data):
-        x, y = data
-        y_pred_baricenter = self(x, training=False)
-        baricenter_loss = self.compiled_loss(y, y_pred_baricenter)
-        return {'baricenter': baricenter_loss}
-        
-    # return configuration of the instance
+    # return the model configuration to enable saving
     def get_config(self):
         config = {
-            "neurons_encoder": self.baricenter.neurons,
-            "neurons_decoder": self.decoder.neurons,
-            "activations_encoder": self.baricenter.activations,
-            "activations_decoder": self.decoder.activations,
+            "neurons_encoder": self.neurons_encoder,
+            "neurons_decoder": self.neurons_decoder,
+            "activations_encoder": self.activations_encoder,
+            "activations_decoder": self.activations_decoder,
             "n_replicas": self.n_replicas,
-            "rate": self.rate.numpy(),
+            "distance_rate": self.distance_rate.numpy(),
         }
         return config
     
-    # re-initialize randomly the weights
-    def reset_weights(self):
-        print(f"\nRe-initializing weights of model {self.name}\n")
+    # compute the distance of each replica from the baricenter, and return the distances in a list
+    def distances(self):
+        distances = []
         for replica in self.replicas:
-            replica.reset_weights()
-        self.baricenter.reset_weights()
-        self.decoder.reset_weights()
+            d = 0
+            for w1, w2 in zip(replica.weights, self.baricenter.weights):
+                d += tf.norm(w1 - w2) ** 2   # since we compute the squared euclidean distance, we can do it piece-wise
+            distances.append(d)
+        return distances
 
+    # define the training behaviour when the model is presented with a batch of data
+    def train_step(self, data):
 
+        # unpack the batch data
+        x, y = data
 
-class AE(keras.Model):
+        # to compute reconstruction error
+        mse = keras.losses.MeanSquaredError()
 
-    def __init__(self, architecture, activations=None, reg_lambda=0, **kwargs):
-        super(AE, self).__init__()
+        # forward pass and computation of losses
+        with tf.GradientTape() as tape:
+            
+            # compute the reconstructions given by the replicas and by the baricenter
+            reconstructions = self(x, training=True)
+            reconstructions_replicas = reconstructions[0:]
+            reconstruction_baricenter = reconstructions[0]
 
-        if activations is None:
-            activations = ['relu']*len(architecture)
+            # compute the average reconstruction error of the replicas
+            reconstruction_loss = 0
+            for reconstruction in reconstructions_replicas:
+                loss = mse(y, reconstruction)
+                reconstruction_loss += loss
+            reconstruction_loss /= self.n_replicas
 
-        layers = []
-        for neurons, activation in zip(architecture, activations):
-            layer = keras.layers.Dense(neurons, activation=activation,
-                                kernel_regularizer=regularizers.L2(reg_lambda))
-            layers.append(layer)
-        self.own_layers = layers
+            # compute the average squared euclidean distance between the weights of the baricenter and those of the replicas.
+            distance_loss = 0
+            for replica in self.replicas:
+                d = 0
+                for w1, w2 in zip(replica.weights, self.baricenter.weights):
+                    d += tf.norm(w1 - w2) ** 2   # since we compute the squared euclidean distance, we can do it piece-wise
+                distance_loss += d
+            distance_loss /= self.n_replicas
 
-    def call(self, inputs):
-        x = inputs
-        for layer in self.own_layers:
-            x = layer(x)
-        return x
+            # compute the total loss
+            total_loss = reconstruction_loss + self.distance_rate * distance_loss
+        
+        # compute the reconstruction error of the baricenter
+        baricenter_loss = mse(y, reconstruction_baricenter)
 
+        # update trainable weights
+        grads = tape.gradient(total_loss, self.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
+        # update the state of the loss trackers
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.baricenter_loss_tracker.update_state(baricenter_loss)
+        self.distance_loss_tracker.update_state(distance_loss)
 
+        # return the current state of the losses
+        return {m.name: m.result() for m in self.metrics}
+    
+    # define the testing behaviour when the model is presented with a batch of data
+    def test_step(self, data):
+        
+        # unpack the batch data
+        x, y = data
 
+        # to compute reconstruction error
+        mse = keras.losses.MeanSquaredError()
 
+        # compute the reconstructions given by the replicas and by the baricenter
+        reconstructions = self(x, training=True)
+        reconstructions_replicas = reconstructions[0:]
+        reconstruction_baricenter = reconstructions[0]
+
+        # compute the average reconstruction error of the replicas
+        reconstruction_loss = 0
+        for reconstruction in reconstructions_replicas:
+            loss = mse(y, reconstruction)
+            reconstruction_loss += loss
+        reconstruction_loss /= self.n_replicas
+
+        # compute the reconstruction error of the baricenter
+        baricenter_loss = mse(y, reconstruction_baricenter)
+
+        # compute the average squared euclidean distance between the weights of the baricenter and those of the replicas.
+        distance_loss = 0
+        for replica in self.replicas:
+            d = 0
+            for w1, w2 in zip(replica.weights, self.baricenter.weights):
+                d += tf.norm(w1 - w2) ** 2   # since we compute the squared euclidean distance, we can do it piece-wise
+            distance_loss += d
+        distance_loss /= self.n_replicas
+
+        # compute the total loss
+        total_loss = reconstruction_loss + self.distance_rate * distance_loss
+
+        # update the state of the loss trackers
+        self.total_loss_tracker.update_state(total_loss)
+        self.reconstruction_loss_tracker.update_state(reconstruction_loss)
+        self.baricenter_loss_tracker.update_state(baricenter_loss)
+        self.distance_loss_tracker.update_state(distance_loss)
+
+        # return the current state of the losses
+        return {m.name: m.result() for m in self.metrics}
+
+    
+    # metrics listed here have their state reset at the beginning of every epoch when training with fit, and
+    # at the beginning of every call to evaluate
+    @property
+    def metrics(self):
+        return [
+            self.total_loss_tracker,
+            self.reconstruction_loss_tracker,
+            self.baricenter_loss_tracker, 
+            self.distance_loss_tracker,
+        ]

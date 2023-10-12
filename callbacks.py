@@ -1,8 +1,11 @@
 import numpy as np
 import pandas as pd
-import sklearn
 import tensorflow as tf
 from tensorflow import keras
+
+from models import ReplicatedAutoEncoder, FullReplicatedAutoEncoder
+from testing import input_robustness, weight_robustness
+from utils import extract_baricenter
 
 
 # The following class, inheriting from keras.callbacks.Callback, is a callback
@@ -66,7 +69,7 @@ class StopTrainingCallback(keras.callbacks.Callback):
 
 
 # The following Callback is meant to calculate
-# generalizability statistics after each epoch
+# generalization statistics after each epoch
 
 class GeneralizableCallback(keras.callbacks.Callback):
     def __init__(self, X, y, std=0.1):
@@ -113,3 +116,55 @@ class GeneralizableCallback(keras.callbacks.Callback):
         # reset original weights
         self.model.set_weights(original_weights)
 
+
+# measure robustness of the model to perturbation of inputs and weights during training,
+# at regular intervals. Results are accessible through self.input_dfs and self.weight_dfs.
+
+class FlatnessCallback(keras.callbacks.Callback):
+
+    def __init__(
+        self, 
+        data,           # data to use to compute the metrics
+        frequency,      # integer number of epochs. Frequency at which to compute the metrics
+        n_iter=3,       # n_iter passed to input_robustness and weight robustness
+        stddevs=None,   # tuple of two elements, stddevs passed respectively to input_robustness and weight_robustness 
+        **kwargs,       # arguments for parent constructor
+    ):
+        super(FlatnessCallback, self).__init__(**kwargs)
+        
+        # default stddev ranges
+        if stddevs is None:
+            stddevs = np.linspace(0, 3.0, 31), np.linspace(0, 1.0, 21)
+        
+        # unpacks stddev ranges
+        self.input_std, self.weight_std = stddevs
+
+        # save parameters
+        self.data = data
+        self.frequency = frequency
+        self.n_iter = n_iter
+        
+        # initialize empty dictionaries to store results
+        self.input_dfs = {}
+        self.weight_dfs = {}
+    
+    def on_epoch_end(self, epoch, logs=None):
+        
+        # every self.frequency epochs
+        if epoch > 0 and epoch % self.frequency == 0:
+            
+            original_weights = self.model.get_weights()
+
+            # extract baricenter if model is a replicated autoencoder, to speed up computations
+            if isinstance(self.model, (ReplicatedAutoEncoder, FullReplicatedAutoEncoder)):
+                ae = extract_baricenter(self.model)
+            else:
+                ae = self.model
+            
+            # compute metrics
+            input_df = input_robustness(self.data, ae, self.input_std, self.n_iter)
+            weight_df = weight_robustness(self.data, ae, self.weight_std, self.n_iter)
+
+            # save results
+            self.input_dfs[epoch] = input_df
+            self.weight_dfs[epoch] = weight_df
