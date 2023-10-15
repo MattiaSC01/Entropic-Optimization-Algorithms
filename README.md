@@ -2,7 +2,7 @@
 
 This project started as a summer internship, under the supervision of Prof. Riccardo Zecchina, and later developed into the experimental part of my Bachelor thesis. The code under `tensorflow implementation` is what I used during my internship. The code under `pytorch implementation` is a reformulation in Pytorch, which I found more flexible and better suited to carry out further experiments for my thesis.
 
-In order to fully understand the motivation and context for this project, it is best to have a glance at the structure of my thesis, of which chapter 4 corresponds to the experiments with the code of this repository. I paste here its brief introduction, the interested reader can delve deeper into the experimental setup and the wider theoretical picture in `Mattia Scardecchia Undergraduate Thesis.pdf`.
+In order to fully understand the motivation and context for this project, it is best to have a glance at the structure of my thesis, of which chapter 4 corresponds to the experiments with the code of this repository. I paste here its brief introduction, the interested reader can delve deeper into the experimental setup and the broader theoretical picture in `Mattia Scardecchia Undergraduate Thesis.pdf`.
 
 ## Thesis Introduction
 
@@ -58,5 +58,5 @@ patterns and reconstruction error on unseen patterns.
 
 Through extensive experimentation, I found that the solutions obtained with Replicated Adam are located in flatter regions of the loss landscape, and enjoy better generalization (reconstruction of unseen patterns from the same distribution) and denoising capabilities compared to those found by Adam. For a broader discussion of the experimental findings and their implications, I refer to my thesis.
 
-![]()
-![]()
+![](https://github.com/MattiaSC01/ReplicatedSGD/blob/main/figures/Screenshot%202023-10-15%20at%2021.41.08.png)
+![](https://github.com/MattiaSC01/ReplicatedSGD/blob/main/figures/Screenshot%202023-10-15%20at%2021.41.48.png)
