@@ -1,62 +1,33 @@
-# Entropic Algorithms
+# Project Goal
 
-This project started as a summer internship, under the supervision of Prof. Riccardo Zecchina, and later developed into the experimental part of my Bachelor thesis. The code under `tensorflow implementation` is what I used during my internship. The code under `pytorch implementation` is a reformulation in Pytorch, which I found more flexible and better suited to carry out further experiments for my thesis.
+The goal of this project was twofold. First, investigating the relationship between the flatness of the loss landscape around minima and the ability to generalize in deep unsupervised learning; second, evaluating the effectiveness of entropic optimization algorithms in this setting, compared to standard gradient-based methods.
 
-In order to fully understand the motivation and context for this project, it is best to have a glance at the structure of my thesis, of which chapter 4 corresponds to the experiments with the code of this repository. I paste here its brief introduction, the interested reader can delve deeper into the experimental setup and the broader theoretical picture in `Mattia Scardecchia Undergraduate Thesis.pdf`.
+For a detailed description of the background, experimental setting and results I refer to the manuscript of my undergraduate thesis, available as `Mattia Scardecchia Undergraduate Thesis.pdf`.
 
-## Thesis Introduction
+# Installation
 
-During the past decade, deep learning has taken the world by storm, with stunning ap-
-plications to fields as diverse as computer vision, natural language processing, automatic
-speech recognition, reinforcement learning, and bioinformatics [1]. Recently, the public
-debate around the potentialities and risks of AI has exploded, inspired by a series of im-
-pressive breakthroughs in computer vision and NLP which were open-sourced or released
-to the public as an interactive demo [2] [3].
+To install the project, from the root directory do:
 
-However, despite its spectacular successes, the theoretical understanding of deep learning
-is seriously lagging behind. In fact, most recent breakthroughs have been guided almost
-exclusively by intuition and experimentation, and they are often the result of clever en-
-gineering and scaling up, without being grounded in a solid theoretical understanding.
-One of the main reasons for the existing gap between theory and applications in deep
-learning is the overwhelming complexity of these devices, which makes it extremely hard
-to investigate their behaviour analytically. That being said, there do exist methods that,
-in largely simplified settings, allow to study these systems and gain insights that can turn
-out to be important for more complex architectures as well. In this direction, one of the
-most promising lines of research employs tools originally developed in the framework of
-statistical physics and complex systems to study the geometrical and statistical proper-
-ties of the large-scale optimization problems involved in the training of neural networks.
-In turn, the understanding of such properties can promote algorithmic advances in the
-training of these devices.
+```
+pip install -r requirements.txt
+pip install -e .
+```
 
-In the first chapter of my thesis, I will start by providing a very brief overview of some of
-the main ideas from statistical physics that are useful for the analysis of neural networks.
-Then, I will present some results from the literature that used these techniques to find
-evidence of the existence of large and connected dense clusters of solutions in the binary
-perceptron learning problem, which are both rare and accessible to algorithms.
+This will install the most recent version of the codebase, written in pytorch and available under `src/ae`. Scripts and notebooks inside the `scripts` and `notebooks` directories assume you have performed these steps.
+There are also two older versions of the code, one of which is in tensorflow, under `src/older code`.
 
-In the second chapter, I will show how insight from the analysis of the geometry of the
-landscape of the binary perceptron has been used to derive very general and effective
-algorithmic schemes, that turn out to be useful not only for shallow networks, but also
-for deep learning. These are called entropic algorithms.
+# Motivation
 
-After that, in the third chapter, I will present some analytical results of my own, obtained
-in the study of a recurrent network of neurons with random couplings. Using techniques
-from statistical physics and spin glass theory, I computed the number of fixed points of
-such a network under a zero-temperature metropolis dynamics that includes in the en-
-ergy a self-coupling term, and studied the dependence of the results on the strength of
-the latter.
+It was shown analytically, in the supervised setting, that in the loss landscape of shallow neural networks there exist large, connected and dense clusters of good configurations, which turn out to be both rare and accessible to search algorithms.
+These configurations turn out to generalize better to unseen patterns, and to better tolerate noisy inputs compared to typical solutions. These findings were confirmed empirically in deep networks, which are intractable by the current methods of spin glass theory.
 
-Finally, in the fourth chapter, I will present the results of some numerical experiments
-that I carried out with shallow and deep autoencoders in the random feature model. The
-aim was twofold. First, I assessed the ability of such devices to estimate the latent di-
-mensionality of data. Then, in this unsupervised setting, I compared the performance of
-an entropic algorithm called replicated Adam with that of standard gradient-based meth-
-ods like vanilla Adam, considering flatness in weight space, ability to denoise corrupted
-patterns and reconstruction error on unseen patterns.
+Inspired by these results, general algorithmic schemes that explicitly target these rare clusters in an effort to improve generalization were devised. These are sometimes called entropic algorithms (e.g. replicated SGD, entropy SGD, SAM, SWA), and have been shown empirically to improve generalization in classification tasks.
 
-## Experimental results
+In this project, I considered the important setting of unupervised learning, which is increasingly relevant in applications given the striking success of generative models, and I investigated whether similar phenomena to the supervised case can be observed in this scenario.
 
-Through extensive experimentation, I found that the solutions obtained with Replicated Adam are located in flatter regions of the loss landscape, and enjoy better generalization (reconstruction of unseen patterns from the same distribution) and denoising capabilities compared to those found by Adam. For a broader discussion of the experimental findings and their implications, I refer to my thesis.
+# Experimental Results
+
+I carried out extensive expriments with shallow and deep autoencoders using a variety of architectures and datasets, comparing entropic algorithms such as SAM and replicated Adam with standard gradient-based optimizers. I found that entropic algorithms tend to find solutions lying in flatter regions of the loss landscape, which incur a smaller reconstruction error on unseen patterns and are better at denoising corrupted patterns.
 
 ![](https://github.com/MattiaSC01/ReplicatedSGD/blob/main/figures/Screenshot%202023-10-15%20at%2021.41.08.png)
 ![](https://github.com/MattiaSC01/ReplicatedSGD/blob/main/figures/Screenshot%202023-10-15%20at%2021.41.48.png)

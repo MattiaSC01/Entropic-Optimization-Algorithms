@@ -1,0 +1,17 @@
+__pycache__
+wandb
+data
+checkpoints
+outputs
+
+*.prof
+*.pt
+*.json
+*.sh
+*.yaml
+
+prove.ipynb
+
+ae.egg-info
+build
+
